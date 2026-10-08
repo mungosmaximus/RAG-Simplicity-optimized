@@ -1,18 +1,55 @@
-# Python
+# === Python ===
 __pycache__/
-*.pyc
-.venv/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# === Virtualno okruzenje ===
 venv/
+.venv/
 env/
-.env
+ENV/
 
-# VS Code
+# === IDE ===
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# OS
+# === OS ===
 .DS_Store
+Thumbs.db
 
-# Data / models (optional, if large)
-*.db
-*.sqlite3
-data/
+# === Podaci (veliki fajlovi) ===
+# PDF-ovi — mogu biti veliki, ne commit-ujemo
+pdfs/*.pdf
+
+# Ekstrahovani tekst — moze biti velik, generisemo ga ponovo
+data/extracted/*.jsonl
+
+# Structure — generisemo ga ponovo
+data/structure/*.json
+data/structure/*.toc.json
+
+# Chunkovi — generisemo ih ponovo
+data/chunks/*.jsonl
+
+# FAISS indeks — velik, generisemo ga ponovo
+data/index/*.index
+data/index/*.jsonl
+
+# === Logovi i temp ===
+*.log
+/tmp/
+.cache/
+
+# === Model kes ===
+# Ako koristis HuggingFace, keš je van projekta (u ~/.cache/),
+# ali za svaki slucaj:
+.cache/
