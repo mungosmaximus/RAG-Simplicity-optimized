@@ -11,6 +11,12 @@ Konvencija imena PDF-a:
   <ime>_toc_X.pdf     -> TOC na strani X
   <ime>.pdf           -> bez eksplicitne TOC lokacije
 
+OBAVEZNE ZAVISNOSTI:
+  - pypdf             — parser PDF-a
+  - fonttools         — OBAVEZNO za PDF-ove sa CFF Type1 fontovima
+                        (bez njega, cirilica moze biti pogresno citana)
+  - tqdm              — progress bar
+
 Izvor:  pdfs/*.pdf
 Izlaz:  data/extracted/*.jsonl  (jedan po PDF-u)
 """
@@ -22,25 +28,50 @@ import re
 from collections import Counter
 
 
-# Regex za TOC lokaciju u imenu fajla: "_toc_12-13.pdf" ili "_toc_8.pdf"
+# =====================================================================
+# PROVERA ZAVISNOSTI
+# =====================================================================
+
+try:
+    import fontTools
+    _HAS_FONTTOOLS = True
+    _FONTTOOLS_VERSION = fontTools.version
+except ImportError:
+    _HAS_FONTTOOLS = False
+    _FONTTOOLS_VERSION = None
+
+
+def _check_dependencies() -> None:
+    """
+    Proverava da li su sve obavezne zavisnosti instalirane.
+    Ispisuje upozorenje ako fontTools nije prisutan.
+    """
+    if not _HAS_FONTTOOLS:
+        print("=" * 70)
+        print("UPOZORENJE: fontTools nije instaliran.")
+        print()
+        print("fontTools je OBAVEZAN za ispravno citanje PDF-ova koji")
+        print("koriste CFF Type1 fontove (cesta pojava u PDF-ovima iz")
+        print("LaTeX-a, Adobe InDesign-a, i dr.).")
+        print()
+        print("Bez fontTools, ovakvi PDF-ovi daju POGRE\u010cNE znakove")
+        print("(npr. cirilica se cita kao kineski znakovi).")
+        print()
+        print("Instaliraj sa:")
+        print("    pip install fonttools")
+        print("=" * 70)
+        print()
+
+
+# Regex za TOC lokaciju u imenu fajla
 RE_TOC_SUFFIX = re.compile(r"_toc_(\d+(?:-\d+)?)\.pdf$", re.IGNORECASE)
 
 
 def parse_toc_location_from_name(filename: str) -> list[int] | None:
-    """
-    Parsira TOC lokaciju iz imena fajla.
-
-    Primeri:
-      'astma_toc_10-12.pdf'  -> [10, 11, 12]
-      'hobp_toc_12.pdf'      -> [12]
-      'dokument.pdf'         -> None
-
-    Vraca listu brojeva strana (1-indeksirano) ili None.
-    """
+    """Parsira TOC lokaciju iz imena fajla."""
     match = RE_TOC_SUFFIX.search(filename)
     if not match:
         return None
-
     spec = match.group(1)
     if "-" in spec:
         start, end = spec.split("-", 1)
@@ -53,14 +84,6 @@ def extract_pages(pdf_dir: str = "pdfs",
     """
     Prolazi kroz sve PDF-ove u folderu.
     Vraca dict {stem: [records]} gde je svaki record jedna strana.
-
-    Svaki record:
-        {
-            "source":  str,   # ime PDF fajla (bez .pdf)
-            "page":    int,   # 1-indeksirano
-            "text":    str,
-            "n_chars": int,
-        }
     """
     pdf_dir = Path(pdf_dir)
     pdf_files = sorted(pdf_dir.glob("*.pdf"))
@@ -71,10 +94,8 @@ def extract_pages(pdf_dir: str = "pdfs",
     results = {}
 
     for pdf_path in pdf_files:
-        # Stem bez _toc_... sufiksa — koristimo kao "source"
         stem = pdf_path.stem
-        # Ukloni _toc_X-Y iz stem-a za "source" (da ime bude cisto)
-        clean_stem = RE_TOC_SUFFIX.sub("", pdf_path.name).replace(".pdf", "")
+        clean_stem = RE_TOC_SUFFIX.sub(".pdf", pdf_path.name).replace(".pdf", "")
 
         reader = PdfReader(pdf_path)
         records = []
@@ -127,6 +148,8 @@ def save_by_document(results: dict[str, list[dict]],
 
 
 def main():
+    _check_dependencies()
+
     results = extract_pages()
     save_by_document(results)
 
@@ -147,6 +170,15 @@ def main():
         print(f"    min:    {min(lengths)}")
         print(f"    max:    {max(lengths)}")
         print(f"    prosek: {sum(lengths) // len(lengths)}")
+
+    # Status zavisnosti
+    print()
+    if _HAS_FONTTOOLS:
+        print(f"fontTools:  aktivan (verzija {_FONTTOOLS_VERSION})")
+    else:
+        print(f"fontTools:  NIJE AKTIVAN")
+        print(f"            PDF-ovi sa CFF fontovima mogu dati pogresne znakove")
+        print(f"            Instaliraj: pip install fonttools")
 
 
 if __name__ == "__main__":

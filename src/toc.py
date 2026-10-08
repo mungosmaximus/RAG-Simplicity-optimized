@@ -1,27 +1,8 @@
 """
 Parsiranje sadrzaja (table of contents) iz PDF-a — MULTI-PDF.
 
-DETEKCIJA TOC LOKACIJE — po prioritetu:
-
-  1) EKSPLICITNO (najvisi prioritet):
-     - Iz imena PDF-a: "..._toc_X-Y.pdf" ili "..._toc_X.pdf"
-     - Iz src/toc_locations.py (recnik TOC_LOCATIONS)
-
-  2) PRIMARNA (postojeca logika):
-     - is_toc_page_with_title:   prvi red je RE_SADRZAJ, bar 70% TOC redova.
-     - is_toc_page_without_title: bar 95% TOC redova + bar 2 familije.
-     - is_toc_page_continuation:  bar 50% TOC redova (nastavak).
-
-  3) FALLBACK (ako primarna ne nadje nista):
-     - is_toc_page_fallback: tackice 4+ u nizu ILI 70% naslova bez tacke.
-
-IZVLACENJE NASLOVA:
-  - Uklanjamo tackice i sve posle njih (ako ih ima), sa ili bez broja.
-  - Spajamo nastavke naslova u dva reda.
-  - Dinamicki dodeljujemo nivoe po redosledu pojavljivanja familija.
-
-Izvor:  data/extracted/*.jsonl
-Izlaz:  data/structure/*.toc.json
+Cuva se i `marker_text` (npr. "ПОГЛАВЉЕ 1.", "1.", "I.") za tacno
+poklapanje u map_pages.py.
 """
 import sys
 from pathlib import Path
@@ -46,6 +27,8 @@ from patterns import (
     RE_PAGE_NUMBER,
     RE_NONALNUM_MARKER,
     ALNUM_FAMILIES,
+    detect_marker,
+    detect_style_family,
 )
 
 try:
@@ -54,20 +37,16 @@ except ImportError:
     TOC_LOCATIONS = {}
 
 
-# --- Pragovi za primarnu detekciju ---
 TOC_RATIO_CONTINUATION = 0.50
 TOC_MIN_FAMILIES_CONTINUATION = 1
 
-# --- Pragovi za fallback ---
 FALLBACK_MIN_LINES = 3
 FALLBACK_MIN_DOT_LINES = 2
 FALLBACK_MIN_HEADING_RATIO = 0.70
 FALLBACK_MAX_SENTENCES = 1
-FALLBACK_MIN_LINES_WEAK = 40  # za slabi signal (bez tackica)
+FALLBACK_MIN_LINES_WEAK = 40
 
-# --- Regex za TOC lokaciju u imenu fajla ---
 RE_TOC_SUFFIX_NAME = re.compile(r"_toc_(\d+(?:-\d+)?)\.pdf$", re.IGNORECASE)
-RE_TOC_SUFFIX_STEM = re.compile(r"_toc_\d+(?:-\d+)?$", re.IGNORECASE)
 
 
 # =====================================================================
@@ -75,7 +54,6 @@ RE_TOC_SUFFIX_STEM = re.compile(r"_toc_\d+(?:-\d+)?$", re.IGNORECASE)
 # =====================================================================
 
 def parse_toc_location_from_name(filename: str) -> list[int] | None:
-    """Parsira TOC lokaciju iz imena PDF-a."""
     match = RE_TOC_SUFFIX_NAME.search(filename)
     if not match:
         return None
@@ -87,29 +65,15 @@ def parse_toc_location_from_name(filename: str) -> list[int] | None:
 
 
 def get_explicit_toc_pages(stem: str, pdfs_dir: Path = Path("pdfs")) -> list[int] | None:
-    """
-    Vraca eksplicitnu TOC lokaciju za dokument.
-
-    Prioritet:
-      1. Ime PDF-a (_toc_X-Y.pdf)
-      2. TOC_LOCATIONS recnik
-
-    Vraca listu strana ili None.
-    """
-    # 1) Iz imena PDF-a
     for pdf_path in pdfs_dir.glob("*.pdf"):
-        # Proveri da li PDF odgovara stem-u (bez _toc_X-Y)
         clean_name = RE_TOC_SUFFIX_NAME.sub(".pdf", pdf_path.name)
         clean_stem = clean_name.replace(".pdf", "")
         if clean_stem == stem:
             loc = parse_toc_location_from_name(pdf_path.name)
             if loc:
                 return loc
-
-    # 2) Iz recnika
     if stem in TOC_LOCATIONS:
         return TOC_LOCATIONS[stem]
-
     return None
 
 
@@ -117,29 +81,28 @@ def get_explicit_toc_pages(stem: str, pdfs_dir: Path = Path("pdfs")) -> list[int
 # 1) DETEKCIJA FAMILIJA
 # =====================================================================
 
-def detect_family(text: str, nonalnum_registry: dict | None = None) -> tuple[str | None, str | None, str]:
-    """Vraca (familija, id, naslov)."""
-    for fam_name, pattern, n_groups in ALNUM_FAMILIES:
-        m = pattern.match(text)
-        if m:
-            if n_groups >= 2:
-                return fam_name, m.group(1), m.group(2).strip()
-            else:
-                return fam_name, None, m.group(1).strip()
+def detect_family(text: str, nonalnum_registry: dict | None = None
+                   ) -> tuple[str, str | None, str, str | None, str | None, str]:
+    """
+    Vraca (familija, id, naslov, style, marker, marker_text).
+    """
+    marker, id_, title, marker_text = detect_marker(text, nonalnum_registry)
+    style = detect_style_family(text)
 
-    m = RE_NONALNUM_MARKER.match(text)
-    if m:
-        marker = m.group(1)
-        title = m.group(2).strip()
-        fam_name = f"nonAlnum_{marker}"
-        if nonalnum_registry is not None:
-            if marker not in nonalnum_registry:
-                nonalnum_registry[marker] = fam_name
-            else:
-                fam_name = nonalnum_registry[marker]
-        return fam_name, None, title
+    if style == "upper":
+        family = "upper"
+    elif style in ("mixed", "lower"):
+        if marker:
+            family = f"{style}_{marker}"
+        else:
+            family = style
+    else:
+        if marker:
+            family = marker
+        else:
+            family = "bez-markera"
 
-    return None, None, text
+    return family, id_, title, style, marker, marker_text
 
 
 # =====================================================================
@@ -147,14 +110,13 @@ def detect_family(text: str, nonalnum_registry: dict | None = None) -> tuple[str
 # =====================================================================
 
 def is_toc_line(line: str) -> bool:
-    """Vraca True ako red lici na stavku sadrzaja."""
     s = line.strip()
     if not s:
         return False
     if len(s) > MAX_TOC_LINE_LENGTH:
         return False
 
-    for _, pattern, _ in ALNUM_FAMILIES:
+    for _, pattern, _, _ in ALNUM_FAMILIES:
         if pattern.match(s):
             return True
 
@@ -180,9 +142,9 @@ def _structure_stats(lines: list[str]) -> tuple[float, int]:
     for line in lines:
         if is_toc_line(line):
             toc_count += 1
-            fam, _, _ = detect_family(line)
-            if fam is not None:
-                distinct_families.add(fam)
+            marker, _, _, _ = detect_marker(line)
+            if marker:
+                distinct_families.add(marker)
     ratio = toc_count / len(lines) if lines else 0.0
     return ratio, len(distinct_families)
 
@@ -227,42 +189,28 @@ def is_toc_page_continuation(page_text: str) -> bool:
 # =====================================================================
 
 def _count_sentences(text: str) -> int:
-    """
-    Broji recenice u tekstu.
-    Iskljucuje numeraciju na pocetku reda i tackice (...).
-    """
     t = re.sub(r"\.{2,}", "", text)
-    # Ukloni numeraciju na pocetku reda (1., I., ПОГЛАВЉЕ 1.)
     t = re.sub(
         r"^\s*(\d+\.|[IVX]+\.|ПОГЛАВЉЕ\s+\d+\.|Поглавље\s+\d+\.)\s*",
-        "",
-        t, flags=re.MULTILINE | re.IGNORECASE,
+        "", t, flags=re.MULTILINE | re.IGNORECASE,
     )
     matches = re.findall(r"[.!?]\s+[А-ШЂЈЉЊЋЏA-Z]", t, re.UNICODE)
     return len(matches)
 
 
 def is_toc_page_fallback(page_text: str) -> bool:
-    """
-    Rezervna detekcija sadrzaja.
-
-    Jaki signal: bar 2 reda sa 4+ tacke u nizu.
-    Slabi signal: bar FALLBACK_MIN_LINES_WEAK redova (40) i 70% naslova.
-    """
     lines = [l.strip() for l in page_text.split("\n") if l.strip()]
     if len(lines) < FALLBACK_MIN_LINES:
         return False
     if _looks_like_impressum(page_text):
         return False
 
-    # Jaki signal: tackice
     dot_lines = sum(1 for l in lines if re.search(r"\.{4,}", l))
     if dot_lines >= FALLBACK_MIN_DOT_LINES:
         if _count_sentences(page_text) > FALLBACK_MAX_SENTENCES:
             return False
         return True
 
-    # Slabi signal: zahteva bar 40 redova
     if len(lines) < FALLBACK_MIN_LINES_WEAK:
         return False
 
@@ -297,7 +245,6 @@ def _find_toc_in_slice(pages_slice: list[dict],
 
     for p in iterator:
         text = p["text"]
-
         if started:
             is_toc = (is_toc_page_continuation(text)
                       or is_toc_page_with_title(text))
@@ -323,21 +270,10 @@ def _find_toc_in_slice(pages_slice: list[dict],
 
 def find_toc_pages(pages: list[dict],
                     explicit_pages: list[int] | None = None) -> tuple[list[dict], str]:
-    """
-    Vraca (toc_pages, gde_je_nadjen).
-
-    Redosled:
-      0) Ako explicit_pages — koristi ih direktno.
-      1) Primarna: pocetak
-      2) Primarna: kraj
-      3) Fallback: pocetak
-      4) Fallback: kraj
-    """
     n = len(pages)
     if n == 0:
         return [], "nije_nadjen"
 
-    # === 0) EKSPLICITNO ===
     if explicit_pages:
         toc_pages = [p for p in pages if p["page"] in explicit_pages]
         if toc_pages:
@@ -345,36 +281,24 @@ def find_toc_pages(pages: list[dict],
 
     lookahead = min(MAX_LOOKAHEAD, max(1, n // 3))
 
-    # === 1) PRIMARNA: pocetak ===
-    toc_pages = _find_toc_in_slice(
-        pages[:lookahead], reversed_order=False, use_fallback=False,
-    )
+    toc_pages = _find_toc_in_slice(pages[:lookahead], False, False)
     if toc_pages:
         return toc_pages, "pocetak"
 
-    # === 2) PRIMARNA: kraj ===
-    end_slice_start = max(0, n - lookahead)
-    end_slice_end = max(0, n - SKIP_END_PAGES)
-    end_candidates = pages[end_slice_start:end_slice_end]
+    end_start = max(0, n - lookahead)
+    end_end = max(0, n - SKIP_END_PAGES)
+    end_candidates = pages[end_start:end_end]
 
-    toc_pages = _find_toc_in_slice(
-        end_candidates, reversed_order=True, use_fallback=False,
-    )
+    toc_pages = _find_toc_in_slice(end_candidates, True, False)
     if toc_pages:
         return toc_pages, "kraj"
 
-    # === 3) FALLBACK: pocetak ===
     print("  Primarna pretraga nije nasla sadrzaj. Pokrecem fallback...")
-    toc_pages = _find_toc_in_slice(
-        pages[:lookahead], reversed_order=False, use_fallback=True,
-    )
+    toc_pages = _find_toc_in_slice(pages[:lookahead], False, True)
     if toc_pages:
         return toc_pages, "pocetak-fallback"
 
-    # === 4) FALLBACK: kraj ===
-    toc_pages = _find_toc_in_slice(
-        end_candidates, reversed_order=True, use_fallback=True,
-    )
+    toc_pages = _find_toc_in_slice(end_candidates, True, True)
     if toc_pages:
         return toc_pages, "kraj-fallback"
 
@@ -382,7 +306,7 @@ def find_toc_pages(pages: list[dict],
 
 
 # =====================================================================
-# 6) CISCENJE I SPAJANJE REDOVA
+# 6) CISCENJE I SPAJANJE
 # =====================================================================
 
 def clean_toc_line(line: str) -> tuple[str, int | None]:
@@ -402,43 +326,93 @@ def clean_toc_line(line: str) -> tuple[str, int | None]:
     return stripped, None
 
 
-def _should_merge(prev_text, text, prev_fam, fam, max_line_len):
-    if fam is not None:
+def _should_merge(prev_text: str, text: str,
+                  prev_marker: str | None, cur_marker: str | None) -> bool:
+    if cur_marker is not None:
         return False
-    if prev_text.rstrip().endswith("."):
+    if prev_text.rstrip().endswith((".", "!", "?")):
         return False
     if text and text[0].islower():
         return True
-    if prev_text.rstrip().endswith(","):
+    if prev_text.rstrip().endswith((",", ";", ":")):
         return True
 
-    prev_is_upper = prev_text.isupper()
-    cur_is_upper = text.isupper()
-    if prev_is_upper != cur_is_upper:
+    prev_style = detect_style_family(prev_text)
+    cur_style = detect_style_family(text)
+    if prev_style and cur_style and prev_style != cur_style:
         return False
 
-    prev_len = len(prev_text)
-    cur_len = len(text)
-    prev_free_space = max_line_len - prev_len
-    could_fit = (cur_len + 1) <= prev_free_space
-    return not could_fit
+    return False
 
 
-def merge_continuation_lines(lines, max_line_len):
+def _should_merge_context(prev_text: str, text: str,
+                           all_lines: list[tuple],
+                           idx: int) -> bool:
+    prev_marker, _, _, _ = detect_marker(prev_text)
+    cur_marker, _, _, _ = detect_marker(text)
+
+    if prev_marker is None:
+        return False
+    if cur_marker is not None:
+        return False
+    if idx + 1 >= len(all_lines):
+        return False
+
+    next_text, _, _ = all_lines[idx + 1]
+    next_marker, _, _, _ = detect_marker(next_text)
+
+    if next_marker != prev_marker:
+        return False
+
+    if prev_text.rstrip().endswith((".", "!", "?")):
+        return False
+
+    if text and text[0].islower():
+        return True
+    if prev_text.rstrip().endswith((",", ";", ":")):
+        return True
+    if prev_marker == "rimski":
+        cur_style = detect_style_family(text)
+        if cur_style == "upper" and len(text) < 60:
+            return True
+
+    return False
+
+
+def merge_continuation_lines(lines: list[tuple]) -> list[tuple]:
     merged = []
-    for text, printed_page, pdf_page in lines:
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        text, printed_page, pdf_page = lines[i]
+
         if merged:
             prev_text, prev_page, prev_pdf = merged[-1]
-            prev_fam, _, _ = detect_family(prev_text)
-            fam, _, _ = detect_family(text)
-            if _should_merge(prev_text, text, prev_fam, fam, max_line_len):
+
+            if _should_merge_context(prev_text, text, lines, i):
                 merged[-1] = (
                     prev_text + " " + text,
                     printed_page if printed_page is not None else prev_page,
                     prev_pdf,
                 )
+                i += 1
                 continue
+
+            prev_marker, _, _, _ = detect_marker(prev_text)
+            cur_marker, _, _, _ = detect_marker(text)
+            if _should_merge(prev_text, text, prev_marker, cur_marker):
+                merged[-1] = (
+                    prev_text + " " + text,
+                    printed_page if printed_page is not None else prev_page,
+                    prev_pdf,
+                )
+                i += 1
+                continue
+
         merged.append((text, printed_page, pdf_page))
+        i += 1
+
     return merged
 
 
@@ -477,51 +451,41 @@ def parse_toc(pages: list[dict],
                     continue
             cleaned_lines.append((text, printed_page, p["page"]))
 
-    if cleaned_lines:
-        max_line_len = max(len(t) for t, _, _ in cleaned_lines)
-    else:
-        max_line_len = 80
-
-    cleaned_lines = merge_continuation_lines(cleaned_lines, max_line_len)
+    cleaned_lines = merge_continuation_lines(cleaned_lines)
 
     nonalnum_registry = {}
-    seen_families = []
     entries = []
 
     for text, printed_page, pdf_page in cleaned_lines:
-        fam, id_, title = detect_family(text, nonalnum_registry)
-        if fam not in seen_families:
-            seen_families.append(fam)
-        fam_str = fam if fam is not None else "bez-markera"
+        family, id_, title, style, marker, marker_text = detect_family(
+            text, nonalnum_registry
+        )
         entries.append({
-            "family": fam_str,
+            "family": family,
+            "style": style,
+            "marker": marker,
+            "marker_text": marker_text,   # ← NOVO
             "id": id_,
             "title": title,
             "printed_page": printed_page,
         })
 
     family_to_level = {}
-    if None in seen_families:
-        family_to_level["bez-markera"] = 1
-
-    numeric_index = 1
-    for fam in seen_families:
-        if fam is None:
-            continue
-        family_to_level[fam] = numeric_index
-        numeric_index += 1
+    seen_families = []
+    next_level = 1
 
     for e in entries:
-        e["level"] = family_to_level.get(e["family"], 1)
-
-    families_order = [
-        (f if f is not None else "bez-markera") for f in seen_families
-    ]
+        fam = e["family"]
+        if fam not in family_to_level:
+            family_to_level[fam] = next_level
+            seen_families.append(fam)
+            next_level += 1
+        e["level"] = family_to_level[fam]
 
     return {
         "toc_location": location,
         "toc_pages": [p["page"] for p in toc_pages],
-        "families_order": families_order,
+        "families_order": seen_families,
         "family_to_level": family_to_level,
         "sections": entries,
     }
@@ -559,10 +523,12 @@ def main():
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 
-        print(f"  Location:   {result['toc_location']}")
-        print(f"  TOC strane: {result['toc_pages']}")
-        print(f"  Sekcija:    {len(result['sections'])}")
-        print(f"  Sacuvano:   {out_path}\n")
+        print(f"  Location:       {result['toc_location']}")
+        print(f"  TOC strane:     {result['toc_pages']}")
+        print(f"  Sekcija:        {len(result['sections'])}")
+        print(f"  Familije:       {result['families_order']}")
+        print(f"  Familija->nivo: {result['family_to_level']}")
+        print(f"  Sacuvano:       {out_path}\n")
 
 
 if __name__ == "__main__":
