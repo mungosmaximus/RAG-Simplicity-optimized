@@ -1,0 +1,9 @@
+{
+  "model_name": "intfloat/multilingual-e5-small",
+  "dimension": 384,
+  "n_chunks": 888,
+  "index_type": "IndexFlatIP",
+  "normalized": true,
+  "passage_prefix": "passage: ",
+  "created_at": "2026-10-08T14:11:34.470910"
+}
