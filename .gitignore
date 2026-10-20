@@ -1,4 +1,38 @@
-# === Python ===
+# ============================================================
+# Git ignore — Medical RAG projekat
+# ============================================================
+
+# --- Podaci i medicinski materijal (ne objavljivati) ---
+data/
+pdfs/
+*.pdf
+*.PDF
+
+# --- Generisani indeksi i keš ---
+*.pkl
+*.pickle
+*.index
+faiss.index
+chunks.pkl
+*.npy
+*.npz
+*.bin
+
+# --- Modeli i kvantizacije ---
+*.gguf
+*.safetensors
+*.ckpt
+models/
+lmstudio/
+
+# --- Virtuelno okruženje ---
+venv/
+.venv/
+env/
+ENV/
+virtualenv/
+
+# --- Python keš i build artefakti ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,48 +42,57 @@ build/
 dist/
 *.egg-info/
 .eggs/
+pip-wheel-metadata/
 
-# === Virtualno okruzenje ===
-venv/
-.venv/
-env/
-ENV/
+# --- Testiranje i pokrivenost ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
 
-# === IDE ===
+# --- Notebook keš ---
+.ipynb_checkpoints/
+
+# --- IDE i editori ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# === OS ===
+# --- OS fajlovi ---
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
+desktop.ini
 
-# === Podaci (veliki fajlovi) ===
-# PDF-ovi — mogu biti veliki, ne commit-ujemo
-pdfs/*.pdf
+# --- Tajne i konfiguracija ---
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
 
-# Ekstrahovani tekst — moze biti velik, generisemo ga ponovo
-data/extracted/*.jsonl
-
-# Structure — generisemo ga ponovo
-data/structure/*.json
-data/structure/*.toc.json
-
-# Chunkovi — generisemo ih ponovo
-data/chunks/*.jsonl
-
-# FAISS indeks — velik, generisemo ga ponovo
-data/index/*.index
-data/index/*.jsonl
-
-# === Logovi i temp ===
+# --- Logovi ---
 *.log
-/tmp/
-.cache/
+logs/
 
-# === Model kes ===
-# Ako koristis HuggingFace, keš je van projekta (u ~/.cache/),
-# ali za svaki slucaj:
-.cache/
+# --- Privremeni fajlovi ---
+*.tmp
+*.temp
+tmp/
+temp/
+
+# --- Streamlit (ako kasnije dodamo) ---
+.streamlit/secrets.toml
+
+# --- Izlazi eksperimenata ---
+outputs/
+runs/
+wandb/
+mlruns/
